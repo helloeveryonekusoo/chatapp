@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TASKLOG — 進捗管理</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231f6b57'/><path d='M9 16.5l4.5 4.5L23 11.5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<!-- ============ 設定未完了パネル ============ -->
+<div id="setup" class="setup" hidden>
+  <div class="setup__card">
+    <p class="eyebrow">SETUP REQUIRED</p>
+    <h1>接続先が未設定です</h1>
+    <p><code>firebase-config.js</code> に Firebase コンソールの設定値を貼り付けてから読み込み直してください。手順は README に記載しています。</p>
+  </div>
+</div>
+
+<!-- ============ サインイン ============ -->
+<div id="auth" class="auth" hidden>
+  <div class="auth__card">
+    <div class="auth__brand">
+      <span class="logo">TASKLOG</span>
+      <span class="logo__sub">v2.4 / 進捗管理コンソール</span>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab is-on" data-mode="signin" role="tab">サインイン</button>
+      <button class="tab" data-mode="signup" role="tab">アカウント登録</button>
+    </div>
+
+    <label class="field" id="f-name" hidden>
+      <span>表示名</span>
+      <input id="in-name" type="text" autocomplete="nickname" placeholder="山田 太郎">
+    </label>
+    <label class="field">
+      <span>メールアドレス</span>
+      <input id="in-mail" type="email" autocomplete="email" placeholder="you@example.com">
+    </label>
+    <label class="field">
+      <span>パスワード</span>
+      <input id="in-pass" type="password" autocomplete="current-password" placeholder="6文字以上">
+    </label>
+
+    <button id="btn-auth" class="btn btn--main">サインイン</button>
+    <div class="divider"><span>または</span></div>
+    <button id="btn-google" class="btn btn--ghost">Google アカウントで続行</button>
+
+    <p id="auth-msg" class="msg" role="status"></p>
+  </div>
+</div>
+
+<!-- ============ メイン ============ -->
+<div id="app" class="app" hidden>
+
+  <header class="bar">
+    <button id="btn-nav" class="bar__nav" aria-label="プロジェクト一覧">≡</button>
+    <span class="logo logo--sm">TASKLOG</span>
+    <span class="bar__crumb" id="crumb">プロジェクト未選択</span>
+    <div class="bar__right">
+      <button id="btn-review" class="chip chip--btn" title="Esc キーでも切り替わります">レビュー表示</button>
+      <button id="btn-out" class="bar__link">サインアウト</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="side" id="side">
+      <div class="side__head">
+        <span class="label">プロジェクト</span>
+        <span class="label label--dim" id="me"></span>
+      </div>
+
+      <ul class="rooms" id="rooms"></ul>
+
+      <div class="side__foot">
+        <input id="in-room" class="input input--sm" placeholder="新規名 または 参加コード">
+        <div class="side__btns">
+          <button id="btn-new" class="btn btn--sm">作成</button>
+          <button id="btn-join" class="btn btn--sm btn--ghost">参加</button>
+        </div>
+        <p id="side-msg" class="msg msg--sm"></p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="log" id="log">
+        <div class="empty" id="empty">
+          <p class="eyebrow">NO PROJECT</p>
+          <p>左のリストからプロジェクトを選ぶか、新しく作成してください。参加コードを共有すれば友達も同じログを見られます。</p>
+        </div>
+      </div>
+
+      <div class="compose" id="compose" hidden>
+        <div class="compose__meta">
+          <span class="mono" id="next-id">#----</span>
+          <span class="label label--dim" id="draft-note"></span>
+        </div>
+        <textarea id="in-msg" class="input input--area" rows="1" placeholder="進捗を記入…"></textarea>
+        <button id="btn-send" class="btn btn--main btn--sm">記録する</button>
+      </div>
+    </main>
+
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

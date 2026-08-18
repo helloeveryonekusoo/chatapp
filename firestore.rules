@@ -1,0 +1,56 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(roomId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.members;
+    }
+
+    // 表示名など
+    match /profiles/{uid} {
+      allow read:  if signedIn();
+      allow write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /rooms/{roomId} {
+      // get: 参加コードを知っている人が参加前に存在確認できるようにする
+      allow get:  if signedIn();
+      // list: 自分が参加しているプロジェクトだけ一覧に出る
+      allow list: if signedIn() && request.auth.uid in resource.data.members;
+
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 60;
+
+      // 参加時の members 追加のみ許可（自分自身を追加する場合に限る）
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+        && request.resource.data.members.hasAll(resource.data.members)
+        && request.resource.data.members.hasOnly(resource.data.members.concat([request.auth.uid]));
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isMember(roomId);
+
+        allow create: if isMember(roomId)
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+
+        // 記録の書き換えは不可
+        allow update, delete: if false;
+      }
+    }
+  }
+}
