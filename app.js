@@ -56,6 +56,7 @@ function clearError() {
   $("err").hidden = true;
   $("err-link").hidden = true;
 }
+$("err-close").addEventListener("click", clearError);
 
 /* ============================================================
    状態
@@ -66,15 +67,18 @@ let roomId = null;      // 表示中のプロジェクト
 let stopRooms = null;   // 購読解除関数
 let stopMsgs = null;
 let review = false;     // レビュー表示中か
-let stopProfile = null; // 既読情報の購読解除
-let reads = {};         // roomId -> 最終既読時刻(ms)
+const stopProfiles = new Map(); // uid -> 購読解除
+const sentBy = new Map();       // uid -> { roomId: 最終記録時刻(ms) }
+let reads = {};         // roomId -> 自分の最終既読時刻(ms)
+let peerSent = {};      // roomId -> 自分以外の最終記録時刻(ms)
 let shown = [];         // いま描画しているログ
 let replyTo = null;     // 引用中の発言
 let attachment = null;  // 添付待ちのファイル
 let jumpBottom = false; // 次の描画で末尾へ送るか
 
-// Firestore の 1 ドキュメント上限は 1MiB。base64 で約 1.34 倍になるぶんを見込む
-const MAX_FILE = 680 * 1024;
+// 添付はメッセージ本体に入れる。Firestore の 1 ドキュメント上限 1MiB に対し
+// base64 で約 1.34 倍になるため、読み込み量も踏まえて控えめに抑える
+const MAX_FILE = 400 * 1024;
 const kb = (n) =>
   n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 
@@ -145,8 +149,10 @@ async function saveProfile(user, name) {
    認証状態の切り替え
    ============================================================ */
 onAuthStateChanged(auth, (user) => {
-  stopRooms?.(); stopMsgs?.(); stopProfile?.();
-  stopRooms = stopMsgs = stopProfile = null;
+  stopRooms?.(); stopMsgs?.();
+  stopRooms = stopMsgs = null;
+  stopProfiles.forEach((stop) => stop());
+  stopProfiles.clear(); sentBy.clear();
   clearError();
   me = user;
 
@@ -163,7 +169,6 @@ onAuthStateChanged(auth, (user) => {
   // setDoc はオフライン時、書き込みがサーバーに届くまで解決しない。ここで await すると
   // 一覧の購読が始まらないまま止まってしまうので、待たずに走らせて失敗だけ拾う
   saveProfile(user).catch((e) => showError("表示名を保存できませんでした", e));
-  watchProfile();
   watchRooms();
 });
 
@@ -177,7 +182,7 @@ function resetWorkspace() {
   $("me-uid").textContent = "";
   $("side-msg").textContent = "";
   $("btn-copy").hidden = true;
-  reads = {}; shown = [];
+  reads = {}; peerSent = {}; shown = [];
   setReply(null); clearAttach();
   $("log").querySelectorAll(".row,.day").forEach((n) => n.remove());
   $("empty").innerHTML = EMPTY_HTML;
@@ -187,40 +192,70 @@ function resetWorkspace() {
 /* ============================================================
    未読の管理
    ------------------------------------------------------------
-   既読位置は profiles/{uid}.reads に置く。端末を変えても引き継げる
+   自分が書き込めるのは profiles/{自分の uid} だけなので、
+     ・記録したこと  → 自分の profile の sent に残す
+     ・どこまで読んだか → 自分の profile の reads に残す
+   とし、相手側の sent を購読して突き合わせる。
+   rooms を書き換えないので、いま公開されているルールのまま動く
    ============================================================ */
-function watchProfile() {
-  stopProfile = onSnapshot(doc(db, "profiles", me.uid), (snap) => {
-    // 書き込み直後はサーバー時刻が未確定なので、推定値で埋めて表示のちらつきを防ぐ
-    const r = snap.data({ serverTimestamps: "estimate" })?.reads || {};
-    reads = {};
-    for (const [k, v] of Object.entries(r)) reads[k] = v?.toMillis?.() ?? 0;
-    drawRooms();
-  }, (e) => console.warn("既読情報を取得できません", e));
+const toMillis = (m) => {
+  const o = {};
+  for (const [k, v] of Object.entries(m || {})) o[k] = v?.toMillis?.() ?? 0;
+  return o;
+};
+
+function recomputePeer() {
+  peerSent = {};
+  for (const [uid, m] of sentBy) {
+    if (uid === me?.uid) continue;      // 自分の記録は未読に数えない
+    for (const [rid, ms] of Object.entries(m)) {
+      if (ms > (peerSent[rid] ?? 0)) peerSent[rid] = ms;
+    }
+  }
 }
 
-const isUnread = (r) => {
-  const last = r.lastAt?.toMillis?.() ?? 0;
-  return last > 0 && r.lastBy !== me?.uid && last > (reads[r.id] ?? 0);
-};
+// 参加中のプロジェクトのメンバーぶんだけ profile を購読する
+function watchProfiles() {
+  const want = new Set([me.uid]);
+  for (const r of rooms) for (const u of r.members || []) want.add(u);
+  const keep = [...want].slice(0, 25);   // 購読しすぎないための保険
+
+  for (const [uid, stop] of [...stopProfiles]) {
+    if (keep.includes(uid)) continue;
+    stop();
+    stopProfiles.delete(uid);
+    sentBy.delete(uid);
+  }
+
+  for (const uid of keep) {
+    if (stopProfiles.has(uid)) continue;
+    stopProfiles.set(uid, onSnapshot(doc(db, "profiles", uid), (snap) => {
+      // 書き込み直後はサーバー時刻が未確定なので、推定値で埋めて表示のちらつきを防ぐ
+      const d = snap.data({ serverTimestamps: "estimate" }) || {};
+      if (uid === me.uid) reads = toMillis(d.reads);
+      else sentBy.set(uid, toMillis(d.sent));
+      recomputePeer();
+      drawRooms();
+    }, (e) => console.warn("プロフィールを取得できません", uid, e)));
+  }
+  recomputePeer();
+}
+
+const isUnread = (r) => (peerSent[r.id] ?? 0) > (reads[r.id] ?? 0);
 
 function markRead(id) {
   if (!id || !me) return;
+  if ((peerSent[id] ?? 0) <= (reads[id] ?? 0)) return;   // 読むものが無ければ書かない
   reads[id] = Date.now();
   drawRooms();
   setDoc(doc(db, "profiles", me.uid), { reads: { [id]: serverTimestamp() } }, { merge: true })
     .catch((e) => console.warn("既読を保存できません", e));
 }
 
-let touchWarned = false;
-// 未読判定のため、送信のたびにプロジェクト側へ最終更新を書き戻す
-function touchRoom(id) {
-  updateDoc(doc(db, "rooms", id), { lastAt: serverTimestamp(), lastBy: me.uid })
-    .catch((e) => {
-      if (touchWarned) return;
-      touchWarned = true;
-      showError("未読表示を更新できません（firestore.rules を貼り直してください）", e);
-    });
+// 相手側の未読判定に使う。自分の profile にだけ書くので権限の追加は要らない
+function markSent(id) {
+  setDoc(doc(db, "profiles", me.uid), { sent: { [id]: serverTimestamp() } }, { merge: true })
+    .catch((e) => console.warn("最終記録を保存できません", e));
 }
 
 /* ============================================================
@@ -235,6 +270,7 @@ function watchRooms() {
   );
   stopRooms = onSnapshot(q, (snap) => {
     rooms = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    watchProfiles();
     drawRooms();
     const saved = localStorage.getItem(LAST_ROOM);
     if (!roomId && rooms.length) openRoom(rooms.some(r => r.id === saved) ? saved : rooms[0].id);
@@ -373,8 +409,10 @@ function drawLog(list) {
       </div>
       <div class="row__body"></div>`;
     row.querySelector(".row__who").textContent = m.name || "不明";
-    row.querySelector(".row__body").textContent = m.text || "";
-    if (!m.text) row.querySelector(".row__body").hidden = true;
+    // ファイル名をそのまま本文に充てた記録は、添付側だけ見せれば足りる
+    const caption = m.file && m.text === m.file.name ? "" : (m.text || "");
+    row.querySelector(".row__body").textContent = caption;
+    if (!caption) row.querySelector(".row__body").hidden = true;
 
     if (m.replyTo) row.insertBefore(quoteNode(m.replyTo), row.querySelector(".row__body"));
     if (m.file) row.appendChild(fileNode(m.file));
@@ -432,46 +470,30 @@ $("reply-cancel").addEventListener("click", () => setReply(null));
 /* ============================================================
    ファイル共有
    ------------------------------------------------------------
-   実体は rooms/{id}/files に置き、ログ本体には名前とサイズだけ載せる。
-   ログを開くたびに全ファイルを読み込まずに済む
+   実体は記録そのものに載せる。書き込みが許されているのは messages だけなので、
+   別コレクションに分けると権限の追加が必要になってしまう
    ============================================================ */
-const fileCache = new Map();
-
-function loadFile(rid, id) {
-  const key = `${rid}/${id}`;
-  if (!fileCache.has(key)) {
-    fileCache.set(key, getDoc(doc(db, "rooms", rid, "files", id)).then((s) => s.data()?.data || ""));
-  }
-  return fileCache.get(key);
-}
-
 function fileNode(f) {
-  const rid = roomId;
   const wrap = document.createElement("div");
   wrap.className = "att";
 
-  if ((f.type || "").startsWith("image/")) {
+  if ((f.type || "").startsWith("image/") && f.data) {
     const img = document.createElement("img");
     img.className = "att__img";
     img.alt = f.name;
+    img.src = f.data;
     wrap.appendChild(img);
-    loadFile(rid, f.id).then((d) => { if (d) img.src = d; }).catch(() => {});
   }
 
   const btn = document.createElement("button");
   btn.className = "att__dl";
   btn.textContent = `${f.name}（${kb(f.size || 0)}）を保存`;
-  btn.addEventListener("click", async () => {
-    btn.disabled = true;
-    try {
-      const data = await loadFile(rid, f.id);
-      if (!data) throw new Error("ファイルの実体が見つかりません");
-      const a = document.createElement("a");
-      a.href = data;
-      a.download = f.name;
-      a.click();
-    } catch (e) { showError("ファイルを取得できませんでした", e); }
-    btn.disabled = false;
+  btn.addEventListener("click", () => {
+    if (!f.data) return showError("ファイルの実体が見つかりません", { code: "not-found" });
+    const a = document.createElement("a");
+    a.href = f.data;
+    a.download = f.name;
+    a.click();
   });
   wrap.appendChild(btn);
   return wrap;
@@ -553,17 +575,14 @@ async function send() {
   if (reply) body.replyTo = reply;
 
   if (pending) {
-    // ID だけ先に採番して書き込みは待たない（オフライン時に止まらないように）
-    const fref = doc(collection(db, "rooms", rid, "files"));
-    setDoc(fref, {
-      name: pending.name, type: pending.type, size: pending.size,
-      data: pending.data, uid: me.uid, createdAt: serverTimestamp()
-    }).catch((e) => showError("ファイルを保存できませんでした", e));
-    fileCache.set(`${rid}/${fref.id}`, Promise.resolve(pending.data));
-    body.file = { id: fref.id, name: pending.name, type: pending.type, size: pending.size };
+    body.file = {
+      name: pending.name, type: pending.type, size: pending.size, data: pending.data
+    };
+    // 本文が空の記録は許可されていないので、キャプション未入力ならファイル名を充てる
+    if (!text) body.text = pending.name;
   }
 
-  touchRoom(rid);
+  markSent(rid);
   try {
     await addDoc(collection(db, "rooms", rid, "messages"), body);
   } catch (e) {
