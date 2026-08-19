@@ -1,7 +1,12 @@
 import { firebaseConfig } from "./firebase-config.js";
 
+// index.html の ?v= と揃える。更新したら両方の数字を上げること
+const BUILD = "20260819d";
 const V = "10.12.5";
 const $ = (id) => document.getElementById(id);
+
+// 読み込まれている版を早い段階で出す（キャッシュの切り分け用）
+$("build").textContent = `build ${BUILD}`;
 
 /* ---------- 設定チェック ---------- */
 if (!firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("YOUR_")) {
